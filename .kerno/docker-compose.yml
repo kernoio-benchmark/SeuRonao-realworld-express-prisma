@@ -32,13 +32,14 @@ services:
       dockerfile_inline: |
         # Multi-stage Dockerfile for Node.js/TypeScript/Prisma application
 
-        # Build stage
+        # Stage 1: Build stage
         FROM node:18-alpine AS builder
 
-        WORKDIR /app
-
-        # Install OpenSSL for Prisma
+        # Install build dependencies
         RUN apk add --no-cache openssl
+
+        # Set working directory
+        WORKDIR /app
 
         # Copy package files
         COPY package*.json ./
@@ -46,49 +47,59 @@ services:
         # Install all dependencies (including dev dependencies for build)
         RUN npm ci
 
-        # Copy prisma schema
-        COPY prisma ./prisma/
+        # Copy application source
+        COPY . .
 
         # Generate Prisma Client
         RUN npx prisma generate
 
-        # Copy source code and configuration
-        COPY tsconfig.json ./
-        COPY src ./src
-
         # Build TypeScript application
         RUN npm run build
 
-        # Production stage
+        # Stage 2: Production stage
         FROM node:18-alpine AS production
 
-        WORKDIR /app
-
-        # Install OpenSSL for Prisma
+        # Install runtime dependencies
         RUN apk add --no-cache openssl
+
+        # Set working directory
+        WORKDIR /app
 
         # Copy package files
         COPY package*.json ./
 
         # Install only production dependencies
-        RUN npm ci --omit=dev && \
+        RUN npm ci --only=production && \
             npm cache clean --force
 
-        # Copy Prisma schema and generate client for production
-        COPY prisma ./prisma/
+        # Copy Prisma schema for runtime
+        COPY prisma ./prisma
+
+        # Generate Prisma Client in production
         RUN npx prisma generate
 
-        # Copy compiled application from builder
+        # Copy built application from builder stage
         COPY --from=builder /app/dist ./dist
 
-        # Create .env file placeholder (should be mounted or provided at runtime)
-        RUN touch .env
+        # Copy .env file if it exists (optional, can be mounted at runtime)
+        COPY .env* ./
 
-        # Expose port (adjust if needed based on application configuration)
+        # Create non-root user for security
+        RUN addgroup -g 1001 -S nodejs && \
+            adduser -S nodejs -u 1001 && \
+            chown -R nodejs:nodejs /app
+
+        # Switch to non-root user
+        USER nodejs
+
+        # Expose port (default for Express apps)
         EXPOSE 3000
 
-        # Run the application
-        CMD ["node", "dist/server.js"]
+        # Set NODE_ENV to production
+        ENV NODE_ENV=production
+
+        # Start the application
+        CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
     depends_on:
       postgres:
         condition: service_healthy
