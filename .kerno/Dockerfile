@@ -1,70 +1,60 @@
 # Multi-stage Dockerfile for Node.js/TypeScript/Prisma application
 
-# Stage 1: Build stage
+# Build stage
 FROM node:18-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache openssl
-
-# Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy dependency manifests
+COPY package.json package-lock.json* ./
 
-# Install all dependencies (including dev dependencies for build)
+# Install dependencies
 RUN npm ci
 
-# Copy application source
-COPY . .
+# Copy source files
+COPY tsconfig.json ./
+COPY prisma ./prisma
+COPY src ./src
 
 # Generate Prisma Client
 RUN npx prisma generate
 
-# Build TypeScript application
+# Build application
 RUN npm run build
 
-# Stage 2: Production stage
-FROM node:18-alpine AS production
+# Production stage
+FROM node:18-alpine
 
-# Install runtime dependencies
+# Install OpenSSL for Prisma
 RUN apk add --no-cache openssl
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Set environment to production
+ENV NODE_ENV=production
 
-# Install only production dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
+# Copy package manifests
+COPY package.json package-lock.json* ./
 
-# Copy Prisma schema for runtime
+# Copy node_modules from builder
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy Prisma schema
 COPY prisma ./prisma
 
-# Generate Prisma Client in production
-RUN npx prisma generate
-
-# Copy built application from builder stage
+# Copy compiled application
 COPY --from=builder /app/dist ./dist
 
-# Copy .env file if it exists (optional, can be mounted at runtime)
-COPY .env* ./
-
-# Create non-root user for security
+# Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001 && \
     chown -R nodejs:nodejs /app
 
-# Switch to non-root user
+# Run as non-root user
 USER nodejs
 
-# Expose port (default for Express apps)
+# Expose port
 EXPOSE 3000
 
-# Set NODE_ENV to production
-ENV NODE_ENV=production
-
-# Start the application
+# Start application
 CMD ["node", "dist/server.js"]

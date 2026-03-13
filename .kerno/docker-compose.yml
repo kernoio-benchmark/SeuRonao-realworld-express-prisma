@@ -31,75 +31,60 @@ services:
       context: ${BUILD_CONTEXT}
       dockerfile_inline: |
         # Multi-stage Dockerfile for Node.js/TypeScript/Prisma application
-
-        # Stage 1: Build stage
-        FROM node:18-alpine AS builder
-
-        # Install build dependencies
-        RUN apk add --no-cache openssl
-
-        # Set working directory
+        
+        # Build stage
+        FROM node:18 AS builder
+        
         WORKDIR /app
-
-        # Copy package files
-        COPY package*.json ./
-
-        # Install all dependencies (including dev dependencies for build)
-        RUN npm ci
-
-        # Copy application source
-        COPY . .
-
+        
+        # Copy everything
+        COPY . ./
+        
+        # Install dependencies
+        RUN npm ci || npm install
+        
         # Generate Prisma Client
         RUN npx prisma generate
-
-        # Build TypeScript application
-        RUN npm run build
-
-        # Stage 2: Production stage
-        FROM node:18-alpine AS production
-
-        # Install runtime dependencies
+        
+        # Build application directly with tsc (avoid dotenv wrapper)
+        RUN npx tsc
+        
+        # Production stage
+        FROM node:18-alpine
+        
+        # Install OpenSSL for Prisma
         RUN apk add --no-cache openssl
-
-        # Set working directory
+        
         WORKDIR /app
-
-        # Copy package files
-        COPY package*.json ./
-
-        # Install only production dependencies
-        RUN npm ci --only=production && \
-            npm cache clean --force
-
-        # Copy Prisma schema for runtime
+        
+        # Set environment to production
+        ENV NODE_ENV=production
+        
+        # Copy package manifests
+        COPY package.json package-lock.json* ./
+        
+        # Copy node_modules from builder
+        COPY --from=builder /app/node_modules ./node_modules
+        
+        # Copy Prisma schema
         COPY prisma ./prisma
-
-        # Generate Prisma Client in production
-        RUN npx prisma generate
-
-        # Copy built application from builder stage
+        
+        # Copy compiled application
         COPY --from=builder /app/dist ./dist
-
-        # Copy .env file if it exists (optional, can be mounted at runtime)
-        COPY .env* ./
-
-        # Create non-root user for security
+        
+        # Create non-root user
         RUN addgroup -g 1001 -S nodejs && \
             adduser -S nodejs -u 1001 && \
             chown -R nodejs:nodejs /app
-
-        # Switch to non-root user
+        
+        # Run as non-root user
         USER nodejs
-
-        # Expose port (default for Express apps)
+        
+        # Expose port
         EXPOSE 3000
-
-        # Set NODE_ENV to production
-        ENV NODE_ENV=production
-
-        # Start the application
-        CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
+        
+        # Start application
+        CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/server.js"]
     depends_on:
       postgres:
         condition: service_healthy
